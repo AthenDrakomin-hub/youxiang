@@ -7,3 +7,4 @@ __pycache__/
 backups/
 mail_panel.log
 myserver_mail.db
+*.bak

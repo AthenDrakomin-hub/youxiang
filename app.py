@@ -709,6 +709,55 @@ def download_attachment(req: AttachmentRequest):
         )
     raise HTTPException(status_code=404, detail="Attachment not found")
 
+
+
+class InboundEmailModel(BaseModel):
+    to: str
+    from_addr: Optional[str] = ""
+    subject: Optional[str] = ""
+    text: Optional[str] = ""
+    html: Optional[str] = ""
+    raw: Optional[str] = ""
+
+@app.post("/api/inbound/webhook")
+def inbound_webhook(req: InboundEmailModel):
+    to_addr = (req.to or "").strip().lower()
+    if not to_addr or "@" not in to_addr:
+        raise HTTPException(status_code=400, detail="invalid recipient")
+    _, domain = to_addr.split("@", 1)
+    with sqlite3.connect(DB_FILE, timeout=10) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM domains WHERE domain_name = ?", (domain,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=400, detail="domain not allowed")
+        from_addr = (req.from_addr or "").strip()
+        subject = req.subject or ""
+        body = req.text or ""
+        raw_source = (req.raw or "").encode("utf-8", errors="ignore")
+        if not body and raw_source:
+            try:
+                msg = message_from_bytes(raw_source)
+                if msg.is_multipart():
+                    for part in msg.walk():
+                        if part.get_content_type() == "text/plain":
+                            body = part.get_payload(decode=True).decode("utf-8", errors="ignore")
+                            break
+                else:
+                    body = msg.get_payload(decode=True).decode("utf-8", errors="ignore")
+                if not subject:
+                    subject = decode_mime_word(msg.get("Subject", "无主题"))
+                if not from_addr:
+                    from_addr = msg.get("From", "")
+            except Exception:
+                pass
+        cursor.execute(
+            "INSERT INTO emails (to_address, from_address, subject, body, raw_source) VALUES (?, ?, ?, ?, ?)",
+            (to_addr, from_addr, subject, body, raw_source)
+        )
+        conn.commit()
+        mail_id = cursor.lastrowid
+    return {"status": "accepted", "mail_id": mail_id, "to": to_addr}
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     with open("index.html", "r", encoding="utf-8") as f:
@@ -720,4 +769,4 @@ def index():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8888)
+    uvicorn.run(app, host="127.0.0.1", port=8890)
